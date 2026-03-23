@@ -71,22 +71,30 @@ except Exception as e:
     print("Error loading files:", str(e))
     raise e
 
-# -------- Precompute predicted ratings --------
-print("Computing predictions...")
+# -------- Lazy prediction storage --------
+predicted_ratings = None
 
-matrix_reduced = svd.transform(user_movie_matrix_filled)
-predicted_ratings_matrix = np.dot(matrix_reduced, svd.components_)
+def compute_predictions():
+    global predicted_ratings
 
-predicted_ratings = pd.DataFrame(
-    predicted_ratings_matrix,
-    index=user_movie_matrix_filled.index,
-    columns=user_movie_matrix_filled.columns
-)
+    if predicted_ratings is None:
+        print("Computing predictions (first request only)...")
 
-print("Prediction matrix ready!")
+        matrix_reduced = svd.transform(user_movie_matrix_filled)
+        predicted_ratings_matrix = np.dot(matrix_reduced, svd.components_)
+
+        predicted_ratings = pd.DataFrame(
+            predicted_ratings_matrix,
+            index=user_movie_matrix_filled.index,
+            columns=user_movie_matrix_filled.columns
+        )
+
+        print("Predictions ready!")
 
 # -------- Recommendation function --------
 def recommend_movies(user_id, num_recommendations=5):
+    compute_predictions()  # lazy compute
+
     if user_id not in predicted_ratings.index:
         return []
 
@@ -119,11 +127,11 @@ def recommend_endpoint():
         "recommendations": recommendations
     })
 
-# -------- Health check (IMPORTANT for Render) --------
+# -------- Health check --------
 @app.route("/")
 def home():
     return "Movie Recommender API is running!"
 
-# -------- Run the app --------
+# -------- Run locally --------
 if __name__ == "__main__":
     app.run(debug=True)
