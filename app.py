@@ -17,73 +17,61 @@ drive_links = {
 # -------- Local paths --------
 os.makedirs("model", exist_ok=True)
 local_paths = {
-    "movies": os.path.join("model", "movies.dat"),
-    "svd_model": os.path.join("model", "svd_model.pkl"),
-    "user_movie_matrix": os.path.join("model", "user_movie_matrix.pkl")
+    "movies": "model/movies.dat",
+    "svd_model": "model/svd_model.pkl",
+    "user_movie_matrix": "model/user_movie_matrix.pkl"
 }
 
-# -------- Robust Google Drive downloader --------
+# -------- Google Drive downloader (FIXED) --------
 def download_from_gdrive(file_id, destination):
-    if os.path.exists(destination) and os.path.getsize(destination) > 0:
-        print(f"{destination} already exists")
-        return
-
-    print(f"Downloading {destination}...")
-
     URL = "https://drive.google.com/uc?export=download"
     session = requests.Session()
 
-    try:
-        response = session.get(URL, params={'id': file_id}, stream=True, timeout=60)
+    print(f"Downloading {destination}...")
 
-        # Handle large file confirmation
-        for key, value in response.cookies.items():
-            if key.startswith('download_warning'):
-                response = session.get(
-                    URL,
-                    params={'id': file_id, 'confirm': value},
-                    stream=True,
-                    timeout=60
-                )
-                break
+    response = session.get(URL, params={'id': file_id}, stream=True)
 
-        response.raise_for_status()
+    # Handle large file confirmation
+    for key, value in response.cookies.items():
+        if key.startswith('download_warning'):
+            response = session.get(URL, params={'id': file_id, 'confirm': value}, stream=True)
 
-        # Write safely
-        with open(destination, "wb") as f:
-            for chunk in response.iter_content(1024 * 1024):
-                if chunk:
-                    f.write(chunk)
+    with open(destination, "wb") as f:
+        for chunk in response.iter_content(1024 * 1024):
+            if chunk:
+                f.write(chunk)
 
-        print(f"Downloaded {destination}")
+    print(f"Downloaded {destination}")
 
-    except Exception as e:
-        print(f"Download failed: {destination}")
-        raise e
-
-# -------- Validate pickle file --------
-def is_valid_pickle(file_path):
-    try:
-        with open(file_path, "rb") as f:
-            start = f.read(2)
-            return start != b'<!'
-    except:
+# -------- Validate pickle --------
+def is_valid_pickle(path):
+    if not os.path.exists(path):
         return False
+    with open(path, "rb") as f:
+        start = f.read(2)
+        return start != b'<!'  # HTML check
 
-# -------- Download files --------
+# -------- Ensure valid files --------
+def ensure_file(file_key):
+    path = local_paths[file_key]
+
+    # Download if missing or corrupted
+    if not is_valid_pickle(path):
+        print(f"{path} invalid or missing. Re-downloading...")
+        download_from_gdrive(drive_links[file_key], path)
+
+        # Check again
+        if not is_valid_pickle(path):
+            raise Exception(f"{file_key} STILL corrupted after download. Fix Google Drive sharing.")
+
+# -------- Download & validate --------
 for key in drive_links:
-    download_from_gdrive(drive_links[key], local_paths[key])
+    ensure_file(key)
 
-print("Files in model folder:", os.listdir("model"))
+print("Files ready:", os.listdir("model"))
 
-# -------- Load model --------
+# -------- Load data --------
 try:
-    if not is_valid_pickle(local_paths["svd_model"]):
-        raise Exception("svd_model.pkl is corrupted (HTML instead of pickle)")
-
-    if not is_valid_pickle(local_paths["user_movie_matrix"]):
-        raise Exception("user_movie_matrix.pkl is corrupted")
-
     with open(local_paths["svd_model"], "rb") as f:
         svd = pickle.load(f)
 
@@ -97,7 +85,6 @@ try:
         encoding="latin-1",
         names=["movieId", "title", "genres"]
     )
-
     movies["movieId"] = movies["movieId"].astype(int)
 
     print("All files loaded successfully!")
@@ -129,7 +116,7 @@ def recommend_movies(user_id, num_recommendations=5):
 
     return recommended_movies[["movieId", "title"]].to_dict(orient="records")
 
-# -------- API Endpoint --------
+# -------- API --------
 @app.route("/recommend", methods=["GET"])
 def recommend_endpoint():
     user_id = request.args.get("userId", type=int)
@@ -145,11 +132,9 @@ def recommend_endpoint():
         "recommendations": recommendations
     })
 
-# -------- Health check --------
 @app.route("/")
 def home():
     return "Movie Recommender API is running!"
 
-# -------- Run locally --------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
