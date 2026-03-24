@@ -22,7 +22,7 @@ local_paths = {
     "user_movie_matrix": os.path.join("model", "user_movie_matrix.pkl")
 }
 
-# -------- Robust Google Drive downloader --------
+# -------- Download helper --------
 def download_from_gdrive(file_id, destination):
     if not os.path.exists(destination):
         print(f"Downloading {destination}...")
@@ -34,7 +34,7 @@ def download_from_gdrive(file_id, destination):
             raise Exception(f"Failed to download file: {file_id}")
 
         with open(destination, "wb") as f:
-            for chunk in response.iter_content(1024 * 1024):  # 1MB chunks
+            for chunk in response.iter_content(1024 * 1024):
                 if chunk:
                     f.write(chunk)
 
@@ -48,7 +48,7 @@ for key in drive_links:
 
 print("Files in model folder:", os.listdir("model"))
 
-# -------- Load model and data --------
+# -------- Load model --------
 try:
     with open(local_paths["svd_model"], "rb") as f:
         svd = pickle.load(f)
@@ -71,40 +71,29 @@ except Exception as e:
     print("Error loading files:", str(e))
     raise e
 
-# -------- Lazy prediction storage --------
-predicted_ratings = None
-
-def compute_predictions():
-    global predicted_ratings
-
-    if predicted_ratings is None:
-        print("Computing predictions (first request only)...")
-
-        matrix_reduced = svd.transform(user_movie_matrix_filled)
-        predicted_ratings_matrix = np.dot(matrix_reduced, svd.components_)
-
-        predicted_ratings = pd.DataFrame(
-            predicted_ratings_matrix,
-            index=user_movie_matrix_filled.index,
-            columns=user_movie_matrix_filled.columns
-        )
-
-        print("Predictions ready!")
-
-# -------- Recommendation function --------
+# -------- Recommendation function (FAST + SAFE) --------
 def recommend_movies(user_id, num_recommendations=5):
-    compute_predictions()  # lazy compute
-
-    if user_id not in predicted_ratings.index:
+    if user_id not in user_movie_matrix_filled.index:
         return []
 
-    user_ratings = predicted_ratings.loc[user_id]
+    # Get user vector
+    user_vector = user_movie_matrix_filled.loc[user_id].values.reshape(1, -1)
 
+    # Transform using SVD
+    user_reduced = svd.transform(user_vector)
+
+    # Reconstruct predicted ratings
+    user_pred = np.dot(user_reduced, svd.components_).flatten()
+
+    user_ratings = pd.Series(user_pred, index=user_movie_matrix_filled.columns)
+
+    # Remove already rated movies
     already_rated = user_movie_matrix_filled.loc[user_id]
     already_rated = already_rated[already_rated > 0].index
 
     recommendations = user_ratings.drop(already_rated, errors="ignore")
 
+    # Top N
     top_movies = recommendations.sort_values(ascending=False).head(num_recommendations)
 
     recommended_movies = movies[movies["movieId"].isin(top_movies.index)]
