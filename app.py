@@ -4,73 +4,45 @@ import pandas as pd
 import numpy as np
 import os
 import requests
+import zipfile
 
 app = Flask(__name__)
 
-# -------- Google Drive file IDs --------
-drive_links = {
-    "movies": "1IBO0cq5ScwUDQo6teSyS6QauP4Nde1wh",
-    "svd_model": "1ke6W6XrJ0n8ZEkDW5Jjlg1FB7iULGgn6",
-    "user_movie_matrix": "11kf9xHzq6JY8xdBxF8liTCrcCEDfhU2V"
-}
+# -------- GitHub Releases URL --------
+ZIP_URL = "https://github.com/user-attachments/files/26213390/models.zip.zip"  # your release URL
+MODEL_DIR = "model"
+ZIP_PATH = os.path.join(MODEL_DIR, "models.zip")
+
+# -------- Ensure model folder exists --------
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+# -------- Download & extract ZIP --------
+def download_and_extract_zip(url, zip_path=ZIP_PATH, extract_to=MODEL_DIR):
+    if not os.path.exists(zip_path):
+        print("Downloading models.zip...")
+        r = requests.get(url, stream=True)
+        with open(zip_path, "wb") as f:
+            for chunk in r.iter_content(1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+        print("Downloaded models.zip")
+
+    # Extract files
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_to)
+        print("Extracted model files")
+
+# -------- Download & extract before loading --------
+download_and_extract_zip(ZIP_URL)
 
 # -------- Local paths --------
-os.makedirs("model", exist_ok=True)
 local_paths = {
-    "movies": "model/movies.dat",
-    "svd_model": "model/svd_model.pkl",
-    "user_movie_matrix": "model/user_movie_matrix.pkl"
+    "movies": os.path.join(MODEL_DIR, "movies.dat"),
+    "svd_model": os.path.join(MODEL_DIR, "svd_model.pkl"),
+    "user_movie_matrix": os.path.join(MODEL_DIR, "user_movie_matrix.pkl")
 }
 
-# -------- Google Drive downloader (FIXED) --------
-def download_from_gdrive(file_id, destination):
-    URL = "https://drive.google.com/uc?export=download"
-    session = requests.Session()
-
-    print(f"Downloading {destination}...")
-
-    response = session.get(URL, params={'id': file_id}, stream=True)
-
-    # Handle large file confirmation
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            response = session.get(URL, params={'id': file_id, 'confirm': value}, stream=True)
-
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(1024 * 1024):
-            if chunk:
-                f.write(chunk)
-
-    print(f"Downloaded {destination}")
-
-# -------- Validate pickle --------
-def is_valid_pickle(path):
-    if not os.path.exists(path):
-        return False
-    with open(path, "rb") as f:
-        start = f.read(2)
-        return start != b'<!'  # HTML check
-
-# -------- Ensure valid files --------
-def ensure_file(file_key):
-    path = local_paths[file_key]
-
-    # Download if missing or corrupted
-    if not is_valid_pickle(path):
-        print(f"{path} invalid or missing. Re-downloading...")
-        download_from_gdrive(drive_links[file_key], path)
-
-        # Check again
-        if not is_valid_pickle(path):
-            raise Exception(f"{file_key} STILL corrupted after download. Fix Google Drive sharing.")
-
-# -------- Download & validate --------
-for key in drive_links:
-    ensure_file(key)
-
-print("Files ready:", os.listdir("model"))
-
-# -------- Load data --------
+# -------- Load model & data --------
 try:
     with open(local_paths["svd_model"], "rb") as f:
         svd = pickle.load(f)
@@ -99,7 +71,6 @@ def recommend_movies(user_id, num_recommendations=5):
         return []
 
     user_vector = user_movie_matrix_filled.loc[user_id].values.reshape(1, -1)
-
     user_reduced = svd.transform(user_vector)
     user_pred = np.dot(user_reduced, svd.components_).flatten()
 
@@ -109,11 +80,9 @@ def recommend_movies(user_id, num_recommendations=5):
     already_rated = already_rated[already_rated > 0].index
 
     recommendations = user_ratings.drop(already_rated, errors="ignore")
-
     top_movies = recommendations.sort_values(ascending=False).head(num_recommendations)
 
     recommended_movies = movies[movies["movieId"].isin(top_movies.index)]
-
     return recommended_movies[["movieId", "title"]].to_dict(orient="records")
 
 # -------- API --------
@@ -126,11 +95,7 @@ def recommend_endpoint():
         return jsonify({"error": "Missing userId parameter"}), 400
 
     recommendations = recommend_movies(user_id, n)
-
-    return jsonify({
-        "userId": user_id,
-        "recommendations": recommendations
-    })
+    return jsonify({"userId": user_id, "recommendations": recommendations})
 
 @app.route("/")
 def home():
